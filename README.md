@@ -1,58 +1,45 @@
-# 34 — Chaos Engineering Security Tool
+# Chaos Engineering Security Tool
 
-> **Difficulty:** Intermediate | **Time:** 3–5 days | **Language:** Go
+![Go](https://img.shields.io/badge/Go-1.21%2B-blue?logo=go)
+![Tests](https://img.shields.io/badge/tests-42%20passing-brightgreen)
+![License](https://img.shields.io/badge/license-MIT%20%2B%20Responsible%20Use-blue)
 
-Tests security resilience by injecting controlled failure conditions at your own
-staging endpoints — expired JWTs, revoked API keys, credential spray, rate limit
-breach, and privilege escalation attempts — then reports which controls held.
+Netflix popularised chaos engineering by randomly terminating production servers to prove their systems were resilient — but the same discipline applies to security controls. Do your APIs actually reject expired JWTs, or does the middleware silently pass them through after a config change? Does your rate limiter hold under a sudden burst of 20 requests? Has your API key revocation propagated within the SLA? This tool answers those questions by injecting five controlled security failure conditions at your staging endpoints and recording exactly which controls held and which failed — suitable as a CI/CD gate before every deployment.
 
----
+## Features
 
-## What It Does
-
-| Experiment            | What It Tests                        | Expected Result          |
-|-----------------------|--------------------------------------|--------------------------|
-| `expired-jwt`         | JWT expiry enforcement               | 401 Unauthorized         |
-| `revoked-api-key`     | Key revocation propagation           | 401 or 403               |
-| `rate-limit-breach`   | Rate limiter under burst traffic     | 429 Too Many Requests    |
-| `permission-escalation` | AuthZ on privileged endpoints      | 403 Forbidden            |
-| `credential-spray`    | Account lockout after N bad attempts | 429 / 423 / 403 lockout  |
-
-Each experiment uses an injectable `HTTPClient` interface, so all 42 tests run
-completely offline with mock HTTP clients.
-
----
+- **5 security experiments** — expired JWT, revoked API key, rate-limit breach, privilege escalation, credential spray
+- **Injectable HTTP client** — `HTTPClient` interface + `HTTPClientFunc` adapter; all 42 tests run offline with mock clients
+- **PASS / FAIL / ERROR outcomes** — PASS means the control worked; FAIL means a security gap; ERROR means the target was unreachable
+- **Text + JSON reports** — plain-text for humans, JSON for CI pipelines; exits 0 on all-pass, 1 on any failure
+- **Runner** — `RunAll` or `RunOne` by name; duration tracked per experiment
+- **Zero external dependencies** — pure Go stdlib
 
 ## Tech Stack
 
-| Component      | Technology          |
-|----------------|---------------------|
-| Language       | Go 1.21+            |
-| HTTP client    | stdlib `net/http`   |
-| CLI            | stdlib `flag`       |
-| Output         | JSON + plain text   |
-| Tests          | stdlib `testing`    |
-
-Zero external dependencies.
-
----
+| Component | Technology |
+|-----------|------------|
+| Language | Go 1.21+ |
+| HTTP | stdlib `net/http` |
+| CLI | stdlib `flag` |
+| Testing | stdlib `testing` + `httptest` |
 
 ## Project Structure
 
 ```
 34-chaos-engineering-security/
 ├── go.mod
-├── main.go                          ← CLI entry point
+├── main.go
 ├── chaos/
 │   ├── client.go                    ← HTTPClient interface + HTTPClientFunc
 │   ├── experiment.go                ← Experiment interface, Result, Outcome, Summary
 │   ├── runner.go                    ← Runner (RunAll, RunOne)
 │   └── experiments/
-│       ├── expired_jwt.go           ← Expired JWT experiment
-│       ├── spray.go                 ← Credential spray experiment
-│       ├── ratelimit.go             ← Rate-limit breach experiment
-│       ├── apikey.go                ← Revoked API key experiment
-│       └── escalation.go           ← Permission escalation experiment
+│       ├── expired_jwt.go           ← Sends expired JWT; expects 401
+│       ├── revoked_api_key.go       ← Sends revoked X-API-Key; expects 401/403
+│       ├── ratelimit.go             ← Sends burst of N requests; expects 429
+│       ├── escalation.go            ← Sends non-admin token to /admin; expects 403
+│       └── spray.go                 ← Credential spray; expects lockout (429/423/403)
 ├── report/
 │   └── report.go                    ← Text + JSON report rendering
 ├── chaos_test.go                    ← 42 offline tests
@@ -60,12 +47,9 @@ Zero external dependencies.
 └── README.md
 ```
 
----
-
 ## Usage
 
 ```bash
-# Build
 go build -o chaos-security .
 
 # List available experiments
@@ -74,10 +58,10 @@ go build -o chaos-security .
 # Run all experiments against a staging target
 ./chaos-security -target http://api.staging.example.com
 
-# Run a single experiment
+# Run one experiment
 ./chaos-security -target http://api.staging.example.com -experiment expired-jwt
 
-# JSON output (useful for CI/CD gates)
+# JSON output (pipe to CI tools)
 ./chaos-security -target http://api.staging.example.com -json
 ```
 
@@ -86,39 +70,28 @@ go build -o chaos-security .
 ```
 ====================================================================
   CHAOS ENGINEERING SECURITY REPORT
-  Target      : http://api.staging.example.com
-  Generated   : 2026-05-02T03:30:00Z
+  Target    : http://api.staging.example.com
 ====================================================================
 
- ✓ [PASS ] expired-jwt               HTTP 401 (want 401)  12ms
-         expired JWT → HTTP 401
-
- ✓ [PASS ] revoked-api-key           HTTP 401 (want 401)   8ms
-         revoked API key → HTTP 401
-
- ✗ [FAIL ] rate-limit-breach         HTTP 200 (want 429)  95ms
-         sent 20 requests, no rate limiting detected
-
- ✓ [PASS ] permission-escalation     HTTP 403 (want 403)   6ms
-         non-admin token → /admin → HTTP 403
-
- ✓ [PASS ] credential-spray          HTTP 429 (want 429)  44ms
-         lockout triggered at attempt 5
+ ✓ [PASS ] expired-jwt            HTTP 401 (want 401)   12ms
+ ✓ [PASS ] revoked-api-key        HTTP 401 (want 401)    8ms
+ ✗ [FAIL ] rate-limit-breach      HTTP 200 (want 429)   95ms
+           sent 20 requests, no rate limiting detected
+ ✓ [PASS ] permission-escalation  HTTP 403 (want 403)    6ms
+ ✓ [PASS ] credential-spray       HTTP 429 (want 429)   44ms
 
 ====================================================================
-  PASS: 4  FAIL: 1  ERROR: 0  TOTAL: 5
+  PASS: 4  FAIL: 1  ERROR: 0
   ✗ Security gaps detected — review failed experiments
 ====================================================================
 ```
 
 **Exit codes:**
 
-| Code | Meaning                          |
-|------|----------------------------------|
-| 0    | All experiments passed           |
-| 1    | One or more failures / errors    |
-
----
+| Code | Meaning                  |
+|------|--------------------------|
+| 0    | All experiments passed   |
+| 1    | One or more failures     |
 
 ## Running Tests
 
@@ -126,19 +99,14 @@ go build -o chaos-security .
 go test ./... -v
 ```
 
-All 42 tests run offline — no real HTTP server needed.
+All 42 tests run offline using mock HTTP clients — no staging server required.
 
----
+## References
 
-## Learning Objectives
+- [MITRE ATT&CK T1110 — Brute Force](https://attack.mitre.org/techniques/T1110/)
+- [Principles of Chaos Engineering](https://principlesofchaos.org/)
+- [OWASP API Security Top 10](https://owasp.org/www-project-api-security/)
 
-- Chaos engineering principles: steady-state hypothesis and game days
-- Security resilience testing methodology
-- JWT validation: what happens when you send an expired token?
-- Credential stuffing vs. spraying — and why lockout policies matter
-- Rate limiting under burst traffic
-- Privilege escalation and authorization enforcement
+## License
 
----
-
-*NullAI Lab — Project 34 | Chaos Engineering Security Tool*
+MIT License + Responsible Use Guidelines. See [LICENSE](LICENSE) for full terms.
